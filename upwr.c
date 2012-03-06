@@ -422,7 +422,7 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 	int size =0;
 	int s;
 
-	printf("send_cmn xfer=%p ipipe=%p\n", sc->sc_xfer, sc->sc_ipipe);
+	printf("send_cmd xfer=%p ipipe=%p\n", sc->sc_xfer, sc->sc_ipipe);
 	
 	memset(req, CMD_PADDING, sizeof(req));
 	req[0] = cmd;
