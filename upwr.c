@@ -60,7 +60,21 @@
 #include <dev/usb/usb_quirks.h>
 #include <dev/usb/usbhid.h>
 
+#define USE_INIT_AT_ATTACH
+
 #define USE_INTR_TRANSFER
+//#define USE_SET_REPORT
+//#define USE_UPWR_INTR_OUT
+//#define USE_RAW_DO_REQUEST
+#define THISISIT
+//#define USE_SET_IDLE
+//#define USE_READ_REPORT_DESC
+#define OUTISOUT
+#define	USE_CALLOUT
+//#define USE_OUT
+#define USE_RAW_INTR_TRANSFER
+
+#define USE_SEND_CMD
 
 #ifdef USB_DEBUG
 #define DPRINTF(x)	if (upwrdebug) logprintf x
@@ -79,7 +93,7 @@ int	upwrdebug = 0;
 #define	dlog(...)	
 #endif
 
-#define UPWR_UPDATE_TICK	3	
+#define UPWR_UPDATE_TICK	50 /* ms */
 
 #define	CMD_NONE		0x00
 #define CMD_MODEL		0xaa
@@ -137,10 +151,16 @@ const struct usb_devno upwr_devs[] = {
 static void upwr_intr_out(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status);
 #endif
 static void upwr_intr_in(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status);
+#ifdef USE_SEND_CMD
 static usbd_status upwr_send_cmd(struct upwr_softc *sc, uint8_t val);
-//static usbd_status upwr_set_idle(struct upwr_softc *sc);
+#endif
+#ifdef USE_SET_IDLE
+static usbd_status upwr_set_idle(struct upwr_softc *sc);
+#endif
 
-//static void upwr_callout(void *);
+#ifdef USE_CALLOUT
+static void upwr_callout(void *);
+#endif
 
 
 //Static int	upwr_ioctl(void *, u_long, caddr_t, int, usb_proc_ptr );
@@ -173,6 +193,7 @@ USB_ATTACH(upwr)
 	usb_endpoint_descriptor_t *ed;
 	usbd_status err;
 	int i;
+	u_int8_t niface;
 #if 0
 #ifdef THISISIT
 	char devinfo[1024];
@@ -199,6 +220,9 @@ USB_ATTACH(upwr)
 #define UPWR_USB_IFACE	0
 #define UPWR_USB_CONFIG	1
 
+	if (usbd_get_config_descriptor(sc->sc_udev) != NULL)
+		printf("configno = %d\n", usbd_get_config_descriptor(sc->sc_udev)->bConfigurationValue);
+
 	/* set configuration */
 	if ((err = usbd_set_config_no(sc->sc_udev, UPWR_USB_CONFIG, 1)) != 0) {
 		printf("%s : failed to set config %d : %s\n",
@@ -206,7 +230,10 @@ USB_ATTACH(upwr)
 
 		USB_ATTACH_ERROR_RETURN;
 	}
-	dlog("");
+
+	i = usbd_interface_count(sc->sc_udev, &niface);
+
+	dlog("has %d interfaces", niface);
 
 	/* get interface handle*/
 	if ((err = usbd_device2interface_handle(sc->sc_udev, UPWR_USB_IFACE,
@@ -217,6 +244,7 @@ USB_ATTACH(upwr)
 		USB_ATTACH_ERROR_RETURN;
 	}
 
+	sc->ep_ointr = sc->ep_iintr = -1;
 	dlog("");
 	/* find endpoints */
 	id = usbd_get_interface_descriptor(sc->sc_iface);
@@ -243,6 +271,12 @@ USB_ATTACH(upwr)
 			ep_obulk = ed->bEndpointAddress;
 		}
 #endif
+
+		dlog("endpt is %d where IN(%d), OUT(%d). type %d where INTR(%d), BULK(%d)",
+				UE_GET_DIR(ed->bEndpointAddress),
+				UE_DIR_IN, UE_DIR_OUT, 
+				UE_GET_XFERTYPE(ed->bmAttributes),
+				UE_INTERRUPT, UE_BULK);
 		if (UE_GET_DIR(ed->bEndpointAddress) == UE_DIR_IN &&
 		    UE_GET_XFERTYPE(ed->bmAttributes) == UE_INTERRUPT){
 			sc->ep_iintr = ed->bEndpointAddress;
@@ -267,6 +301,7 @@ USB_ATTACH(upwr)
 		return;
 	}
 
+#ifdef ALLOC_ON_ATTACH
 	if (sc->sc_oxfer == NULL) {
 		sc->sc_oxfer = usbd_alloc_xfer(sc->sc_udev);
 		if (sc->sc_oxfer == NULL)
@@ -285,9 +320,31 @@ USB_ATTACH(upwr)
 		if (sc->sc_ibuf == NULL)
 			goto fail;
 	}
-
+#endif
+	dlog("control endpoint = %d", USB_CONTROL_ENDPOINT);
+	
+#ifdef USE_OUT
+	/*  open OUT pipe */
+	dlog("out endp = %d", sc->ep_ointr);
+#ifdef OUT_PIPE_INTR
+	err =  usbd_open_pipe_intr(sc->sc_iface, sc->ep_ointr,
+		USBD_SHORT_XFER_OK, &sc->sc_opipe, sc, sc->sc_obuf,
+		sc->sc_osize, upwr_intr_out , UPWR_UPDATE_TICK);
+#else
+	err = usbd_open_pipe(sc->sc_iface, sc->ep_ointr, 0, &sc->sc_opipe);
+#endif
+	
 	dlog("");
+	if (err) {
+		printf("%s : could not open intr pipe %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+#endif
+
+	dlog("in endp = %d", sc->ep_iintr);
 	/*  open IN pipe */
+	sc->sc_ibuf = malloc(sc->sc_isize, M_USBDEV, M_WAITOK);
 	err = usbd_open_pipe_intr(sc->sc_iface, sc->ep_iintr,
 		USBD_SHORT_XFER_OK, &sc->sc_ipipe, sc, sc->sc_ibuf,
 		sc->sc_isize, upwr_intr_in, UPWR_UPDATE_TICK);
@@ -299,34 +356,33 @@ USB_ATTACH(upwr)
 		goto fail;
 	}
 
-	/*  open OUT pipe */
-	dlog("");
-	err =  usbd_open_pipe_intr(sc->sc_iface, sc->ep_ointr,
-		USBD_SHORT_XFER_OK, &sc->sc_opipe, sc, sc->sc_obuf,
-		sc->sc_osize, NULL/*  upwr_intr_out */, UPWR_UPDATE_TICK);
-	
-	dlog("");
-	if (err) {
-		printf("%s : could not open intr pipe %s\n",
-			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
-		goto fail;
-	}
-
-	dlog("");
-	/* init done ? */
-	dlog("init done");
-
 	/*  no need? */
-///	upwr_set_idle(sc);
+#ifdef USE_SET_IDLE
+	upwr_set_idle(sc);
+#endif
+
+	dlog("hgoge");
 
 	// need this?
-//	err = usbd_read_report_desc(sc->sc_iface, &desc, &size, M_USBDEV);
-//	if (err) {
-//		printf("%s : could not get report descriptor %s\n",
-//				sc->sc_dev.dv_xname, usbd_errstr(err));
-//	}
+#ifdef USE_READ_REPORT_DESC
+	void *desc;
+	int size;
+	err = usbd_read_report_desc(sc->sc_iface, &desc, &size, M_USBDEV);
+	if (err) {
+		printf("%s : could not get report descriptor %s\n",
+				sc->sc_dev.dv_xname, usbd_errstr(err));
+	}
+#endif
+	dlog("gogo");
+	dlog("gaga");
 
 	/* init */
+
+#ifdef USE_INIT_AT_ATTACH
+#ifdef USE_CALLOUT 
+	usb_callout_init(sc->sc_upwr_ch);
+	usb_callout(sc->sc_upwr_ch, hz, upwr_callout, sc);
+#else
 	err = upwr_send_cmd(sc, CMD_MODEL);
 	dlog("hoge");
 	if (err) {
@@ -341,8 +397,15 @@ USB_ATTACH(upwr)
 			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
 	}
 	dlog("done send command");
+#endif
+#endif
+
+	dlog("");
+	/* init done ? */
+	dlog("init done");
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev, USBDEV(sc->sc_dev));
+	dlog("done add");
 
 	USB_ATTACH_SUCCESS_RETURN;
 fail:
@@ -371,6 +434,7 @@ upwr_activate(device_ptr_t self, enum devact act)
 		case DVACT_ACTIVATE:
 			return EOPNOTSUPP;
 		case DVACT_DEACTIVATE:
+			dlog("deactivated");
 			sc->sc_dying = 1;
 			break;
 	}
@@ -380,11 +444,8 @@ upwr_activate(device_ptr_t self, enum devact act)
 USB_DETACH(upwr)
 {
 	USB_DETACH_START(upwr, sc);
-	int s;
 
 	dlog("upwr_detach: sc=%p flags=%d\n", sc, flags);
-
-	s = splusb();
 
 	if (sc->sc_oxfer != NULL && sc->sc_obuf != NULL)
 		usbd_free_buffer(sc->sc_oxfer);
@@ -399,8 +460,6 @@ USB_DETACH(upwr)
 	if (sc->sc_ixfer != NULL)
 		usbd_free_xfer(sc->sc_ixfer);
 
-	splx(s);
-
 	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
 			USBDEV(sc->sc_dev));
 
@@ -414,25 +473,20 @@ upwr_intr_out(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status statu
 	struct upwr_softc *sc = (struct upwr_softc *)priv;
 	uint8_t buf[64];
 	int i;
-	int s;
 
 	if (sc->sc_dying) {
 		dlog("dying");
 		return;
 	}
 
-	s = splusb();
-
 	if (status != USBD_NORMAL_COMPLETION) {
 		if (status == USBD_NOT_STARTED || status == USBD_CANCELLED) {
-			splx(s);
 			return;
 		}
 		if (status == USBD_STALLED) {
 			usbd_clear_endpoint_stall_async(sc->sc_opipe);
 		}
 
-		splx(s);
 		return;
 	}
 
@@ -499,7 +553,6 @@ upwr_intr_out(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status statu
 		break;
 	}	
 
-	splx(s);
 }
 #endif
 
@@ -509,22 +562,18 @@ upwr_intr_in(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status
 	struct upwr_softc *sc = (struct upwr_softc *)priv;
 	uint8_t buf[64];
 	int i;
-	int s;
 
 	if (sc->sc_dying)
 		return;
 
-	s = splusb();
-
 	if (status != USBD_NORMAL_COMPLETION) {
+		dlog("error intr");
 		if (status == USBD_NOT_STARTED || status == USBD_CANCELLED) {
-			splx(s);
 			return;
 		}
 		if (status == USBD_STALLED) {
 			usbd_clear_endpoint_stall_async(sc->sc_ipipe);
 		}
-		splx(s);
 		return;
 	}	
 
@@ -587,11 +636,10 @@ upwr_intr_in(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status
 		break;
 	}
 
-	splx(s);
 	return;
 }
 
-#if 0
+#ifdef USE_SET_IDLE
 static usbd_status
 upwr_set_idle(struct upwr_softc *sc)
 {
@@ -603,7 +651,7 @@ upwr_set_idle(struct upwr_softc *sc)
 	USETW(req.wIndex, 0);
 	USETW(req.wLength, 0);
 
-	err = usbd_do_request(sc->sc_udev, &req, &sc->sc_buf);
+	err = usbd_do_request(sc->sc_udev, &req, &sc->sc_ibuf);
 	if (err) {
 		printf("%s : could not issue command %s\n",
 			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
@@ -615,29 +663,73 @@ upwr_set_idle(struct upwr_softc *sc)
 
 #endif
 
+#ifdef USE_RAW_INTR_TRANSFER
+static void
+upwr_transfer_cb(usbd_xfer_handle xfer, usbd_private_handle priv,
+		      usbd_status status)
+{
+	wakeup(xfer);
+}
+#endif
+
+#ifdef USE_SEND_CMD
 static usbd_status
 upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 {
 #ifdef USE_INTR_TRANSFER
 	usbd_status err;	
 	int i;
+	uint8_t	buf[64];
+#ifdef USE_RAW_INTR_TRANSFER
+	int s;
+#endif
 
-	memset(sc->sc_obuf, CMD_PADDING, sc->sc_osize);
-	sc->sc_obuf[0] = cmd;
+	sc->sc_oxfer = usbd_alloc_xfer(sc->sc_udev);
+	if (sc->sc_oxfer == NULL)
+		return EIO;
+
+//	memset(sc->sc_obuf, CMD_PADDING, sc->sc_osize);
+	memset(buf, CMD_PADDING, sc->sc_osize);
+//	sc->sc_obuf[0] = cmd;
+	buf[0] = cmd;
 
 	sc->sc_issueing_cmd = cmd;
 	sc->sc_accepted_cmd = CMD_NONE;
 
 	for (i = 0; i < 64; i++) {
-		printf("%x ", sc->sc_obuf[i]);
+//		printf("%x ", sc->sc_obuf[i]);
+		printf("%x ", buf[i]);
 	}
 	printf("\n");
 
-	i = splusb();
+#ifndef USE_RAW_INTR_TRANSFER
 	err = usbd_intr_transfer(sc->sc_oxfer, sc->sc_opipe,
-			0, hz/10, sc->sc_obuf, &sc->sc_osize, "upwr");
-	splx(i);
+			0, 1, buf, &sc->sc_osize, "upwr");
+#else
+	usbd_setup_xfer(sc->sc_oxfer, sc->sc_opipe, 0, buf, sc->sc_osize,
+			0, 1, upwr_transfer_cb);
+	s = splusb();
+	err = usbd_transfer(xfer);
+	if (err != USBD_IN_PROGRESS) {
+		splx(s);
+		dlog("failed setup xfer %s", usbd_errstr(err));
+		return err;
+	}
+	//error = tsleep(xfer, PZERO |PCATCH, "upwr", 0);
+	splx(s);
+	usbd_get_xfer_status(sc->sc_oxfer, NULL, NULL, &i, &err);
+	dlog("transfer size %d", i);
+	if (err) {
+		dlog("errored %s\n", usbd_errstr(err));
+		usbd_clear_endpoint_stall_async(sc->sc_opipe);
+	}
+
+	return (err);
+
+
+#endif
 	dlog("after usbd_intr_transfer");
+	usbd_free_xfer(sc->sc_oxfer);
 
 	if (err) {
 		dlog("transfer failed %s", usbd_errstr(err));
@@ -648,15 +740,18 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 		return EIO;
 	}
 
+	dlog("transfer is ok");
+
 	/* wait ack? : do we need this? */
-	tsleep(sc, 0, "upwr", hz/10);
+//	tsleep(sc, 0, "upwr", hz/10);
 
 	return 0;
 #endif
 
-#if USE_RAW_DO_REQUEST
+#ifdef USE_RAW_DO_REQUEST
 	usb_device_request_t req;
 	usbd_status err;
+	uint8_t	buf[62]
 
 
 	//req.bmRequestType = UT_READ_CLASS_INTERFACE;//UT_WRITE_VENDOR_DEVICE;
@@ -666,7 +761,7 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 	USETW(req.wIndex, 0);
 	USETW(req.wLength, 64);
 
-	err = usbd_do_request(sc->sc_udev, &req, &sc->sc_buf);
+	err = usbd_do_request(sc->sc_udev, &req, &buf);
 	if (err) {
 		printf("%s : could not issue command %s\n",
 			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
@@ -696,7 +791,6 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 	printf("\n");
 
 	/* need something ? */
-	s = splusb();
 
 	size = sizeof(req);
 	/*
@@ -718,28 +812,35 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 	}
 	printf("done transfer");
 
-	splx(s);;
 	
 	/* wait ack? : do we need this? */
-	tsleep(sc, 0, "upwr", hz/10);
+	//tsleep(sc, 0, "upwr", 1);
 
 	return 0;
 #endif
 }
+#endif
 
-#if 0
+#ifdef USE_CALLOUT
 static void
 upwr_callout(void *arg)
 {
 	struct upwr_softc *sc = arg;
-	uint8_t cmd;
+	usbd_status err;
 
-	cmd = CMD_OUTLET1_ON;
-	if (sc->sc_oldval == cmd) cmd = CMD_OUTLET1_OFF;
-
-	upwr_send_cmd(sc, cmd);
-	sc->sc_oldval = cmd;
-
-	callout_reset(&sc->sc_callout, UPWR_UPDATE_TICK * hz, upwr_callout, sc);
+	err = upwr_send_cmd(sc, CMD_MODEL);
+	dlog("hoge");
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+	}
+	dlog("model done");
+	
+	err = upwr_send_cmd(sc, CMD_OUTLET1_ON);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+	}
+	dlog("done send command");
 }
 #endif
