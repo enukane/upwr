@@ -67,10 +67,10 @@
 //#define USE_UPWR_INTR_OUT
 //#define USE_RAW_DO_REQUEST
 #define THISISIT
-//#define USE_SET_IDLE
-//#define USE_READ_REPORT_DESC
+#define USE_SET_IDLE
+#define USE_READ_REPORT_DESC
 #define OUTISOUT
-//#define	USE_CALLOUT
+#define	USE_CALLOUT
 #define USE_OUT
 //#define USE_RAW_INTR_TRANSFER
 
@@ -279,21 +279,6 @@ USB_ATTACH(upwr)
 			return;
 		}
 
-	dlog("");
-#if 0
-		/*  won't come here does it?  */
-		if (UE_GET_DIR(ed->bEndpointAddress) == UE_DIR_IN &&
-		    UE_GET_XFERTYPE(ed->bmAttributes) == UE_BULK) {
-			dlog("%d is UE_DIR_IN && UE_BULK", i);
-			ep_ibulk = ed->bEndpointAddress;
-		}
-		if (UE_GET_DIR(ed->bEndpointAddress) == UE_DIR_OUT &&
-		    UE_GET_XFERTYPE(ed->bmAttributes) == UE_BULK) {
-			dlog("%d is UE_DIR_OUT_&& UE_BULK", i);
-			ep_obulk = ed->bEndpointAddress;
-		}
-#endif
-
 		dlog("endpt is %d where IN(%d), OUT(%d). type %d where INTR(%d), BULK(%d)",
 				UE_GET_DIR(ed->bEndpointAddress),
 				UE_DIR_IN, UE_DIR_OUT, 
@@ -330,17 +315,30 @@ USB_ATTACH(upwr)
 		return;
 	}
 
+//	sc->sc_endpoints[EP_OUT].xfer = usbd_alloc_xfer(sc->sc_udev);
+//	if (sc->sc_endpoints[EP_OUT].xfer == NULL)
+//		goto fail;
+//	sc->sc_endpoints[EP_OUT].buf = usbd_alloc_buffer(sc->sc_endpoints[EP_OUT].xfer, sc->sc_endpoints[EP_OUT].size);
+//	if (sc->sc_endpoints[EP_OUT].buf == NULL)
+//		goto fail;
+
 #ifdef ALLOC_ON_ATTACH
 	if (sc->sc_endpoints[EP_OUT].xfer == NULL) {
 		sc->sc_endpoints[EP_OUT].xfer = usbd_alloc_xfer(sc->sc_udev);
 		if (sc->sc_endpoints[EP_OUT].xfer == NULL)
 			goto fail;
-		sc->sc_endpoints[EP_OUT].buf = usbd_alloc_buffer(sc->sc_endpoints[EP_OUT].xfer, sc->sc_endpoints[EP_OUT].size);
+		/*
+		sc->sc_endpoints[EP_OUT].buf = usbd_alloc_buffer(
+				sc->sc_endpoints[EP_IN].xfer,
+				sc->sc_endpoints[EP_OUT].size
+				);
+				*/
+		sc->sc_endpoints[EP_OUT].buf = malloc(sc->sc_endpoints[EP_OUT].size, M_USBDEV, M_WAITOK);
 		if (sc->sc_endpoints[EP_OUT].buf == NULL)
 			goto fail;
 	}
 
-	dlog("");
+	/* // we are not using intr xfer
 	if (sc->sc_endpoints[EP_IN].xfer == NULL) {
 		sc->sc_endpoints[EP_IN].xfer = usbd_alloc_xfer(sc->sc_udev);
 		if (sc->sc_endpoints[EP_IN].xfer == NULL)
@@ -349,6 +347,7 @@ USB_ATTACH(upwr)
 		if (sc->sc_endpoints[EP_IN].buf == NULL)
 			goto fail;
 	}
+	*/
 #endif
 	dlog("control endpoint = %d", USB_CONTROL_ENDPOINT);
 
@@ -425,14 +424,57 @@ USB_ATTACH(upwr)
 	usb_callout_init(sc->sc_upwr_ch);
 	usb_callout(sc->sc_upwr_ch, hz, upwr_callout, sc);
 #else
+	/* MODEL */
 	err = upwr_send_cmd(sc, CMD_MODEL);
-	dlog("hoge");
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	/* VERSION */
+	err = upwr_send_cmd(sc, CMD_VERSION);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	/* OUTLET STATUS */
+	err = upwr_send_cmd(sc, CMD_OUTLET1_STATUS);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	err = upwr_send_cmd(sc, CMD_OUTLET2_STATUS);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	err = upwr_send_cmd(sc, CMD_OUTLET3_STATUS);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	/* OUTLET* on */
+	err = upwr_send_cmd(sc, CMD_OUTLET1_ON);
 	if (err) {
 		printf("%s : upwr_send_cmd failed : %s\n",
 			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
 	}
-	dlog("model done");
-	
+
+	err = upwr_send_cmd(sc, CMD_OUTLET1_ON);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+	}
+
 	err = upwr_send_cmd(sc, CMD_OUTLET1_ON);
 	if (err) {
 		printf("%s : upwr_send_cmd failed : %s\n",
@@ -450,19 +492,28 @@ USB_ATTACH(upwr)
 	dlog("done add");
 
 	USB_ATTACH_SUCCESS_RETURN;
+	return;
 fail:
-	if (sc->sc_endpoints[EP_OUT].xfer != NULL && sc->sc_endpoints[EP_OUT].buf != NULL)
-		usbd_free_buffer(sc->sc_endpoints[EP_OUT].xfer);
-	if (sc->sc_endpoints[EP_IN].xfer != NULL && sc->sc_endpoints[EP_IN].buf != NULL)
-		usbd_free_buffer(sc->sc_endpoints[EP_IN].xfer);
-	if (sc->sc_endpoints[EP_IN].pipeh != NULL)
+	printf("welcome to the real world\n");
+	if (sc->sc_endpoints[EP_IN].pipeh != NULL) {
+		usbd_abort_pipe(sc->sc_endpoints[EP_IN].pipeh);
 		usbd_close_pipe(sc->sc_endpoints[EP_IN].pipeh);
-	if (sc->sc_endpoints[EP_OUT].pipeh != NULL)
+	}
+	if (sc->sc_endpoints[EP_OUT].pipeh != NULL) {
+		usbd_abort_pipe(sc->sc_endpoints[EP_OUT].pipeh);
 		usbd_close_pipe(sc->sc_endpoints[EP_OUT].pipeh);
+	}
+
+	if (sc->sc_endpoints[EP_IN].buf != NULL)
+		free(sc->sc_endpoints[EP_IN].buf, M_USBDEV);
+	if (sc->sc_endpoints[EP_OUT].buf != NULL)
+		free(sc->sc_endpoints[EP_OUT].buf, M_USBDEV);
+
+	//if (sc->sc_endpoints[EP_IN].xfer != NULL)
+	//	usbd_free_xfer(sc->sc_endpoints[EP_IN].xfer);
 	if (sc->sc_endpoints[EP_OUT].xfer != NULL)
 		usbd_free_xfer(sc->sc_endpoints[EP_OUT].xfer);
-	if (sc->sc_endpoints[EP_IN].xfer != NULL)
-		usbd_free_xfer(sc->sc_endpoints[EP_IN].xfer);
+
 
 	USB_ATTACH_ERROR_RETURN;
 }
@@ -489,18 +540,22 @@ USB_DETACH(upwr)
 
 	dlog("upwr_detach: sc=%p flags=%d\n", sc, flags);
 
-	if (sc->sc_endpoints[EP_OUT].xfer != NULL && sc->sc_endpoints[EP_OUT].buf != NULL)
-		usbd_free_buffer(sc->sc_endpoints[EP_OUT].xfer);
-	if (sc->sc_endpoints[EP_IN].xfer != NULL && sc->sc_endpoints[EP_IN].buf != NULL)
-		usbd_free_buffer(sc->sc_endpoints[EP_IN].xfer);
-	if (sc->sc_endpoints[EP_IN].pipeh != NULL)
+	if (sc->sc_endpoints[EP_IN].pipeh != NULL) {
+		usbd_abort_pipe(sc->sc_endpoints[EP_IN].pipeh);
 		usbd_close_pipe(sc->sc_endpoints[EP_IN].pipeh);
-	if (sc->sc_endpoints[EP_OUT].pipeh != NULL)
+	}
+	if (sc->sc_endpoints[EP_OUT].pipeh != NULL) {
+		usbd_abort_pipe(sc->sc_endpoints[EP_OUT].pipeh);
 		usbd_close_pipe(sc->sc_endpoints[EP_OUT].pipeh);
-	if (sc->sc_endpoints[EP_OUT].xfer != NULL)
-		usbd_free_xfer(sc->sc_endpoints[EP_OUT].xfer);
-	if (sc->sc_endpoints[EP_IN].xfer != NULL)
-		usbd_free_xfer(sc->sc_endpoints[EP_IN].xfer);
+	}
+
+	if (sc->sc_endpoints[EP_IN].buf != NULL)
+		free(sc->sc_endpoints[EP_IN].buf, M_USBDEV);
+	if (sc->sc_endpoints[EP_OUT].buf != NULL)
+		free(sc->sc_endpoints[EP_OUT].buf, M_USBDEV);
+
+	//if (sc->sc_endpoints[EP_IN].xfer != NULL)
+	//	usbd_free_xfer(sc->sc_endpoints[EP_IN].xfer);
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
 			USBDEV(sc->sc_dev));
@@ -603,7 +658,6 @@ upwr_intr_in(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status
 {
 	struct upwr_softc *sc = (struct upwr_softc *)priv;
 	uint8_t buf[64];
-	int i;
 
 	if (sc->sc_dying)
 		return;
@@ -620,57 +674,53 @@ upwr_intr_in(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status
 	}	
 
 	memcpy(buf, (char *)sc->sc_endpoints[EP_IN].buf, 64);
+	sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 	switch(sc->sc_issueing_cmd) {
 	case CMD_MODEL: /* model */
-		dlog("CMD_MODEL");
-		dlog("buf[0] = %d\n", buf[0]);
-	memcpy(buf, (char *)sc->sc_endpoints[EP_OUT].buf, 64);
-	for (i = 0; i < 64; i++) {
-		printf("%x ", buf[i]);
-	}
-	printf("\n");
+		dlog("CMD_MODEL buf[0] = %d\n", buf[0]);
 		sc->sc_issueing_cmd = CMD_NONE;
-		sc->sc_accepted_cmd = CMD_MODEL;
+		sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 		break;
 	case CMD_VERSION: /* version */
 		dlog("CMD_VERSION");
 		dlog("buf[0] = %d.%d\n", buf[0], buf[1]);
 		sc->sc_issueing_cmd = CMD_NONE;
-		sc->sc_accepted_cmd = CMD_MODEL;
+		sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 		break;
 	case CMD_POLL1:
 		dlog("CMD_POLL1");
 		dlog("current = %d mA\n", buf[0] << 8 | buf[1]);
 		sc->sc_issueing_cmd = CMD_NONE;
-		sc->sc_accepted_cmd = CMD_MODEL;
+		sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 		break;
 	case CMD_POLL2:
 		dlog("CMD_POLL2");
 		sc->sc_issueing_cmd = CMD_NONE;
-		sc->sc_accepted_cmd = CMD_MODEL;
+		sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 		break;
 	case CMD_OUTLET1_STATUS:
 	case CMD_OUTLET2_STATUS:
 	case CMD_OUTLET3_STATUS:
-		dlog("CMD_OUTLET*_STATUS : %x", sc->sc_issueing_cmd);
+		dlog("CMD_OUTLET*_STATUS : %x %d", sc->sc_issueing_cmd, buf[0]);
 		sc->sc_issueing_cmd = CMD_NONE;
-		sc->sc_accepted_cmd = CMD_MODEL;
+		sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 		break;
 	case CMD_OUTLET1_ON:
 	case CMD_OUTLET2_ON:
 	case CMD_OUTLET3_ON:
-		dlog("CMD_OUTLET*_ON : %x", sc->sc_issueing_cmd);
+		dlog("CMD_OUTLET*_ON : %x %d", sc->sc_issueing_cmd, buf[0]);
 		sc->sc_issueing_cmd = CMD_NONE;
-		sc->sc_accepted_cmd = CMD_MODEL;
+		sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 		break;
 	case CMD_OUTLET1_OFF:
 	case CMD_OUTLET2_OFF:
 	case CMD_OUTLET3_OFF:
-		dlog("CMD_OUTLET*_OFF : %x", sc->sc_issueing_cmd);
+		dlog("CMD_OUTLET*_OFF : %x %d", sc->sc_issueing_cmd, buf[0]);
 		sc->sc_issueing_cmd = CMD_NONE;
-		sc->sc_accepted_cmd = CMD_MODEL;
+		sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 		break;
 	case CMD_NONE:
+		sc->sc_accepted_cmd = sc->sc_issueing_cmd;
 		break;
 	default:
 		dlog("????");
@@ -722,13 +772,16 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 	usbd_status err;	
 	int i;
 	uint8_t	buf[64];
+//	uint8_t	*buf;
+	usbd_xfer_handle	xfer;
+//	uint8_t	*buf = sc->sc_endpoints[EP_OUT].buf;
 #ifdef USE_RAW_INTR_TRANSFER
 	int s;
 #endif
 
-	sc->sc_endpoints[EP_OUT].xfer = usbd_alloc_xfer(sc->sc_udev);
-	if (sc->sc_endpoints[EP_OUT].xfer == NULL)
-		return EIO;
+	xfer = usbd_alloc_xfer(sc->sc_udev);
+
+//	buf = sc->sc_endpoints[EP_OUT].buf;
 
 //	memset(sc->sc_endpoints[EP_OUT].buf, CMD_PADDING, sc->sc_endpoints[EP_OUT].size);
 	memset(buf, CMD_PADDING, sc->sc_endpoints[EP_OUT].size);
@@ -745,6 +798,7 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 	printf("\n");
 
 #ifndef USE_RAW_INTR_TRANSFER
+#ifdef USE_SC_XFER
 	printf("xfer %p, xfer->dmabuf %p, pipeh %p, buf %p, size %p %d\n",
 		sc->sc_endpoints[EP_OUT].xfer,
 		usbd_get_buffer(sc->sc_endpoints[EP_OUT].xfer),
@@ -757,14 +811,22 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 		sc->sc_endpoints[EP_OUT].xfer, 
 		sc->sc_endpoints[EP_OUT].pipeh,
 		0, 
-		1, 
+		2, 
 		buf, 
 		&sc->sc_endpoints[EP_OUT].size, "upwr"
 		);
 #else
-	usbd_setup_xfer(sc->sc_endpoints[EP_OUT].xfer, sc->sc_endpoints[EP_OUT].pipeh, 0, buf, sc->sc_endpoints[EP_OUT].size,
-			0, 1, upwr_transfer_cb);
-	s = splusb();
+	err = usbd_intr_transfer(
+		xfer,
+		sc->sc_endpoints[EP_OUT].pipeh,
+		0, 
+		1, 
+		buf, 
+		&sc->sc_endpoints[EP_OUT].size, "upwr"
+		);
+#endif
+#else
+//	s = splusb();
 	err = usbd_transfer(sc->sc_endpoints[EP_OUT].xfer);
 	if (err != USBD_IN_PROGRESS) {
 		splx(s);
@@ -772,7 +834,7 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 		return err;
 	}
 	//error = tsleep(xfer, PZERO |PCATCH, "upwr", 0);
-	splx(s);
+//	splx(s);
 	usbd_get_xfer_status(sc->sc_endpoints[EP_OUT].xfer, NULL, NULL, &i, &err);
 	dlog("transfer size %d", i);
 	if (err) {
@@ -785,7 +847,7 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 
 #endif
 	dlog("after usbd_intr_transfer");
-	usbd_free_xfer(sc->sc_endpoints[EP_OUT].xfer);
+//	usbd_free_xfer(sc->sc_endpoints[EP_OUT].xfer);
 
 	if (err) {
 		dlog("transfer failed %s", usbd_errstr(err));
@@ -799,7 +861,7 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 	dlog("transfer is ok");
 
 	/* wait ack? : do we need this? */
-//	tsleep(sc, 0, "upwr", hz/10);
+	tsleep(sc, 0, "upwr", hz/10);
 
 	return 0;
 #endif
@@ -883,20 +945,90 @@ upwr_callout(void *arg)
 {
 	struct upwr_softc *sc = arg;
 	usbd_status err;
-
+	/* MODEL */
 	err = upwr_send_cmd(sc, CMD_MODEL);
-	dlog("hoge");
 	if (err) {
 		printf("%s : upwr_send_cmd failed : %s\n",
 			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
 	}
-	dlog("model done");
-	
+
+	/* VERSION */
+	err = upwr_send_cmd(sc, CMD_VERSION);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	/* OUTLET STATUS */
+	err = upwr_send_cmd(sc, CMD_OUTLET1_STATUS);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	err = upwr_send_cmd(sc, CMD_OUTLET2_STATUS);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	err = upwr_send_cmd(sc, CMD_OUTLET3_STATUS);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	/* OUTLET* on */
 	err = upwr_send_cmd(sc, CMD_OUTLET1_ON);
 	if (err) {
 		printf("%s : upwr_send_cmd failed : %s\n",
 			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	err = upwr_send_cmd(sc, CMD_OUTLET1_ON);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
+	}
+
+	err = upwr_send_cmd(sc, CMD_OUTLET1_ON);
+	if (err) {
+		printf("%s : upwr_send_cmd failed : %s\n",
+			USBDEVNAME(sc->sc_dev), usbd_errstr(err));
+		goto fail;
 	}
 	dlog("done send command");
+	return;
+fail:
+	printf("welcome to the real world\n");
+	if (sc->sc_endpoints[EP_IN].pipeh != NULL) {
+		usbd_abort_pipe(sc->sc_endpoints[EP_IN].pipeh);
+		usbd_close_pipe(sc->sc_endpoints[EP_IN].pipeh);
+	}
+	if (sc->sc_endpoints[EP_OUT].pipeh != NULL) {
+		usbd_abort_pipe(sc->sc_endpoints[EP_OUT].pipeh);
+		usbd_close_pipe(sc->sc_endpoints[EP_OUT].pipeh);
+	}
+
+	if (sc->sc_endpoints[EP_IN].buf != NULL)
+		free(sc->sc_endpoints[EP_IN].buf, M_USBDEV);
+	if (sc->sc_endpoints[EP_OUT].buf != NULL)
+		free(sc->sc_endpoints[EP_OUT].buf, M_USBDEV);
+
+	//if (sc->sc_endpoints[EP_IN].xfer != NULL)
+	//	usbd_free_xfer(sc->sc_endpoints[EP_IN].xfer);
+//	if (sc->sc_endpoints[EP_OUT].xfer != NULL)
+//		usbd_free_xfer(sc->sc_endpoints[EP_OUT].xfer);
+
+
+	dlog("done send command");
+	return;
 }
 #endif
