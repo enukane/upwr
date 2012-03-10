@@ -70,9 +70,9 @@
 //#define USE_SET_IDLE
 //#define USE_READ_REPORT_DESC
 #define OUTISOUT
-#define	USE_CALLOUT
+//#define	USE_CALLOUT
 //#define USE_OUT
-#define USE_RAW_INTR_TRANSFER
+//#define USE_RAW_INTR_TRANSFER
 
 #define USE_SEND_CMD
 
@@ -709,7 +709,7 @@ upwr_send_cmd(struct upwr_softc *sc, uint8_t cmd)
 	usbd_setup_xfer(sc->sc_oxfer, sc->sc_opipe, 0, buf, sc->sc_osize,
 			0, 1, upwr_transfer_cb);
 	s = splusb();
-	err = usbd_transfer(xfer);
+	err = usbd_transfer(sc->sc_oxfer);
 	if (err != USBD_IN_PROGRESS) {
 		splx(s);
 		dlog("failed setup xfer %s", usbd_errstr(err));
