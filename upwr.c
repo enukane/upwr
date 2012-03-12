@@ -109,18 +109,18 @@ const struct usb_devno upwr_devs[] = {
 static void upwr_intr_in(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status);
 static usbd_status upwr_send_cmd(struct upwr_softc *sc, uint8_t val);
 static usbd_status upwr_set_idle(struct upwr_softc *sc);
-static void sysctl_hw_upwr_setup(struct sysctllog **clog);
+static void sysctl_hw_upwr_sc_setup(struct sysctllog **clog, upwr_softc *sc);
 
 // XXX: this sucks
 static struct upwr_softc *sc0;
+static sysctlnode *upwr_root;
+static upwr_softc scs[256];
 
 USB_DECLARE_DRIVER(upwr);
 
 USB_MATCH(upwr)
 {
 	USB_MATCH_START(upwr, uaa);
-
-	dlog("vid = %x, pid = %x", uaa->vendor, uaa->product);
 
 	if (upwr_lookup(uaa->vendor, uaa->product) == NULL) {
 		dlog("not found");
@@ -344,7 +344,7 @@ USB_ATTACH(upwr)
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev, USBDEV(sc->sc_dev));
 
-	sysctl_hw_upwr_setup(NULL);
+	sysctl_hw_upwr_sc_setup(NULL, sc);
 
 	USB_ATTACH_SUCCESS_RETURN;
 	return;
@@ -675,6 +675,8 @@ upwr_sysctl_outlet3(SYSCTLFN_ARGS)
 
 	node = *rnode;
 
+	printf("%s %u : name=%s, parent=%s\n",__func__, __LINE__, node.sysctl_name, node.sysctl_parent->sysctl_name);
+
 	if (newp) {
 		op = *(const int *)newp;
 		switch(op) {
@@ -698,15 +700,23 @@ upwr_sysctl_outlet3(SYSCTLFN_ARGS)
 
 	return 0;
 }
-/* 
+
 static void
-sysctl_hw_upwr_setup(struct sysctllog **clog) {
-*/
+sysctl_hw_upwr_sc_setup(struct sysctllog **clog, upwr_softc *sc)
+{
+	int unit = sc->sc_dev.dv_unit;
+
+	// create upwr + dv_unit node
+	/// add outlet1
+	/// add outlet2
+	/// add outlet3
+
+}
+
 SYSCTL_SETUP(sysctl_hw_upwr_setup, "sysctl setup for upwr") 
 {
 	int rc;
 	const struct sysctlnode *node_root = NULL;
-	printf("%u %s\n", __LINE__, __func__);
 
 	if ((rc = sysctl_createv(
 			clog, 0, NULL, NULL,
@@ -717,9 +727,8 @@ SYSCTL_SETUP(sysctl_hw_upwr_setup, "sysctl setup for upwr")
 		goto err;
 	}
 
-	printf("%u %s\n", __LINE__, __func__);
 	if ((rc = sysctl_createv(
-			clog, 0, NULL, &node_root,
+			clog, 0, NULL, &upwr_root,
 			CTLFLAG_PERMANENT, 
 			CTLTYPE_NODE, "upwr", SYSCTL_DESCR("upwr controls"),
 			NULL, 0, NULL, 0,
@@ -730,7 +739,7 @@ SYSCTL_SETUP(sysctl_hw_upwr_setup, "sysctl setup for upwr")
 		goto err;
 	}
 
-	printf("%u %s\n", __LINE__, __func__);
+#if 0
 #define UPWR_NEW_SYSCTL(param) \
 	if ((rc = sysctl_createv(\
 			clog, 0, &node_root, NULL, \
@@ -752,6 +761,7 @@ SYSCTL_SETUP(sysctl_hw_upwr_setup, "sysctl setup for upwr")
 
 	printf("%u %s\n", __LINE__, __func__);
 	return;
+#endif
 err:
 	aprint_error("%s: sysctl_createv failed (rc = %d)\n", __func__, rc);
 }
